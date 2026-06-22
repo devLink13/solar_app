@@ -45,9 +45,22 @@ col1, col2 = st.columns(2)
 
 with col1:
     nome_cliente = st.text_input("Nome do Cliente", placeholder="Ex: Fulano de Tal")
-    tipo_ligacao = st.selectbox("Padrão de Entrada (Energisa)", ["Monofásico", "Bifásico", "Trifásico"])
     endereço_cliente = st.text_input("Endereço do Cliente", placeholder="Ex: Rua das Flores, 123 - Campo Grande/MS")
+    tipo_ligacao = st.selectbox("Padrão de Entrada (Energisa)", ["Monofásico", "Bifásico", "Trifásico"])
+    custo_disponibilidade = {
+        "Monofásico": 30,
+        "Bifásico": 50,
+        "Trifásico": 100
+    }
+
+    if tipo_ligacao:
+        st.caption(f"Custo de Disponibilidade para clientes {tipo_ligacao}: {custo_disponibilidade[tipo_ligacao]} KWh por mês (conforme tabela Energisa MS), gerando um custo fixo mensal de aproxidamente {custo_disponibilidade[tipo_ligacao] * 0.88:.2f}. (considerando tarifa média de R$ 0,88 por kWh).")
     codigo_UC = st.text_input("Código da Unidade Consumidora (UC)", placeholder="Ex: 1234567890")
+
+    
+
+
+
 
 with col2:
     consumo_atual = st.number_input("Média Histórica Atual (kWh/mês)", min_value=0, value=0, step=50)
@@ -201,6 +214,7 @@ if consumo_alvo > 0:
         - **Código UC:** {codigo_UC if codigo_UC else 'Não informado'}
         - **Padrão de Entrada:** {tipo_ligacao}
         - **Tensão de Fornecimento:** {tensao_fornecimento}
+        - **Taxa de Custo de Disponibilidade:** {custo_disponibilidade[tipo_ligacao]} KWh/mês (conforme tabela Energisa MS), gerando um custo fixo mensal de aproxidamente {custo_disponibilidade[tipo_ligacao] * 0.88:.2f} (considerando tarifa média de R$ 0,88 por kWh).
 
     
     **Memorial descritivo de cálculo:**
