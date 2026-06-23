@@ -1,7 +1,74 @@
 import streamlit as st
 import math
 import pandas as pd
+import textwrap
+from geopy.geocoders import Nominatim
+import requests
 
+# =========================================
+# FUNÇÕES DO APP
+# ==========================================
+
+# OBTER COORDENADAS GEOGRÁFICAS A PARTIR DO ENDEREÇO
+def obter_coordenadas(endereco):
+    if not endereco:
+        return None, None
+    
+    geolocator = Nominatim(user_agent="solar_app")
+    location = geolocator.geocode(endereco, timeout=10)
+
+    if location:
+        return location.latitude, location.longitude
+    
+    return None, None
+
+# OBTER HSP (Horas de Sol Pleno) A PARTIR DAS COORDENADAS GEOGRÁFICAS
+def obter_hsp(lat, lon):
+    url = "https://re.jrc.ec.europa.eu/api/v5_3/PVcalc"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "peakpower": 1,
+        "loss": 14,
+        "outputformat": "json"
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        st.error(f"Erro ao obter dados de irradiancia: {e}")
+        return None
+
+    monthly = data.get("outputs", {}).get("monthly", {}).get("fixed", [])
+    hsp_mensal = {}
+    valores = []
+
+    for item in monthly:
+        mes = item.get("month")
+        hsp_diario = item.get("H(i)_d")
+        hsp_mensal[mes] = hsp_diario
+        if hsp_diario is not None:
+            valores.append(hsp_diario)
+
+    hsp_medio_anual = sum(valores) / len(valores) if valores else None
+
+    return {
+        "hsp_medio_anual": hsp_medio_anual,
+        "hsp_medio_mensal": hsp_mensal,
+    }
+
+
+def gerar_assinatura_inputs(*valores):
+    partes = []
+    for valor in valores:
+        if hasattr(valor, "to_json"):
+            partes.append(valor.to_json())
+        else:
+            partes.append(str(valor))
+    return "||".join(partes)
+
+    
 # ==========================================
 # CONFIGURAÇÃO DA PÁGINA
 # ==========================================
@@ -10,6 +77,23 @@ st.set_page_config(
     page_icon="⚡",
     layout="wide"
 )
+
+
+# =========================================
+# CONFIGURAÇÃO DOS STATES
+# =========================================
+st.session_state.setdefault("dados_hsp", None)
+st.session_state.setdefault("coordenadas", None)
+st.session_state.setdefault("endereco_busca", None)
+st.session_state.setdefault("cache_endereco_geo", {})
+st.session_state.setdefault("gerar_dimensionamento", False)
+st.session_state.setdefault("ultima_assinatura_inputs", None)
+
+hsp_auto = st.session_state.get("dados_hsp")
+hsp_padrao = 5.2
+if hsp_auto and hsp_auto.get("hsp_medio_anual") is not None:
+    hsp_padrao = float(hsp_auto["hsp_medio_anual"])
+
 
 # Cabeçalho do Sistema
 col_logo, col_title = st.columns([1, 8])
@@ -28,8 +112,18 @@ st.sidebar.header("⚙️ Parâmetros de Engenharia")
 st.sidebar.caption("Ajuste de acordo com a NDU 013 e dados locais.")
 
 # O HSP padrão já está ajustado para a irradiação média de Campo Grande
-hsp = st.sidebar.number_input("Irradiação Local (HSP)", min_value=3.0, max_value=7.0, value=5.2, step=0.1)
-pr = st.sidebar.number_input("Performance Ratio (PR)", min_value=0.50, max_value=1.00, value=0.75, step=0.01)
+hsp = st.sidebar.number_input(
+    "Irradiação Local (HSP)",
+    min_value=3.0,
+    max_value=7.0,
+    value=float(hsp_padrao),
+    step=0.1
+)
+if hsp_auto and hsp_auto.get("hsp_medio_anual") is not None:
+    st.sidebar.caption(f"Valor obtido automaticamente para a localização: {hsp_auto.get('hsp_medio_anual'):.2f} HSP médio anual.")
+else:
+    st.sidebar.caption("Valor padrão para Campo Grande/MS. Insira o endereço do cliente para obter o valor exato.")
+pr = st.sidebar.number_input("Performance Ratio (PR)", min_value=0.50, max_value=1.00, value=0.8, step=0.01)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Especificações do Kit")
@@ -46,6 +140,59 @@ col1, col2 = st.columns(2)
 with col1:
     nome_cliente = st.text_input("Nome do Cliente", placeholder="Ex: Fulano de Tal")
     endereço_cliente = st.text_input("Endereço do Cliente", placeholder="Ex: Rua das Flores, 123 - Campo Grande/MS")
+    endereco_normalizado = (endereço_cliente or "").strip()
+
+    if (
+        st.session_state.get("endereco_busca")
+        and endereco_normalizado
+        and endereco_normalizado != st.session_state.get("endereco_busca")
+    ):
+        st.session_state["coordenadas"] = None
+        st.session_state["dados_hsp"] = None
+        st.session_state["gerar_dimensionamento"] = False
+
+    if st.button("Buscar coordenadas e HSP"):
+        cache_geo = st.session_state["cache_endereco_geo"]
+
+        if not endereco_normalizado:
+            st.warning("Informe um endereço válido para obter as coordenadas.")
+        else:
+            dados_cache = cache_geo.get(endereco_normalizado)
+            if dados_cache:
+                st.session_state["coordenadas"] = dados_cache.get("coordenadas")
+                st.session_state["dados_hsp"] = dados_cache.get("dados_hsp")
+                st.session_state["endereco_busca"] = endereco_normalizado
+            else:
+                lat, lon = obter_coordenadas(endereco_normalizado)
+
+                if lat is not None and lon is not None:
+                    dados_hsp = obter_hsp(lat, lon)
+                    if dados_hsp:
+                        st.session_state["coordenadas"] = (lat, lon)
+                        st.session_state["dados_hsp"] = dados_hsp
+                        st.session_state["endereco_busca"] = endereco_normalizado
+                        st.session_state["cache_endereco_geo"][endereco_normalizado] = {
+                            "coordenadas": (lat, lon),
+                            "dados_hsp": dados_hsp,
+                        }
+                    else:
+                        st.warning("Não foi possível obter o HSP para esse endereço.")
+                else:
+                    st.warning("Informe um endereço válido para obter as coordenadas.")
+
+    if (
+        endereco_normalizado
+        and st.session_state.get("endereco_busca") == endereco_normalizado
+        and st.session_state.get("coordenadas")
+        and st.session_state.get("dados_hsp")
+    ):
+        lat, lon = st.session_state["coordenadas"]
+        dados_hsp = st.session_state["dados_hsp"]
+        st.success(f"Coordenadas carregadas: latitude {lat:.6f}, longitude {lon:.6f}")
+        st.caption(f"HSP médio anual estimado: {dados_hsp['hsp_medio_anual']:.2f} h/dia")
+    elif endereco_normalizado:
+        st.info("Altere o endereço e clique em Buscar coordenadas e HSP para carregar novamente as coordenadas e o HSP antes de gerar o dimensionamento.")
+
     tipo_ligacao = st.selectbox("Padrão de Entrada (Energisa)", ["Monofásico", "Bifásico", "Trifásico"])
     custo_disponibilidade = {
         "Monofásico": 30,
@@ -59,14 +206,38 @@ with col1:
 
     
 
-
-
-
 with col2:
     consumo_atual = st.number_input("Média Histórica Atual (kWh/mês)", min_value=0, value=0, step=50)
     consumo_alvo = consumo_atual  # Inicialmente, o consumo alvo é igual ao consumo atual 
     tipo_telhado = st.selectbox("Tipo de Telhado", ["Fibrocimento", "Cerâmico", "Metálico/Zinco", "Laje"])
     tensao_fornecimento = st.selectbox("Tensão de Fornecimento (V)", ["127V", "220V"])
+
+assinatura_atual = gerar_assinatura_inputs(
+    nome_cliente,
+    endereço_cliente,
+    codigo_UC,
+    tipo_ligacao,
+    consumo_atual,
+    tipo_telhado,
+    tensao_fornecimento,
+    hsp,
+    pr,
+    potencia_painel,
+    tipo_inversor,
+    st.session_state.get("cargas_editor"),
+)
+
+if st.session_state.get("gerar_dimensionamento") and st.session_state.get("ultima_assinatura_inputs") != assinatura_atual:
+    st.session_state["gerar_dimensionamento"] = False
+
+# botão para gerar o dimensionamento e renderizar o restante da página
+if st.button("Gerar Dimensionamento", type="secondary", use_container_width=True):
+    if consumo_atual <= 0:
+        st.warning("Informe um valor de consumo atual maior que zero para gerar o dimensionamento.")
+        st.session_state["gerar_dimensionamento"] = False
+    else:
+        st.session_state["gerar_dimensionamento"] = True
+        st.session_state["ultima_assinatura_inputs"] = assinatura_atual
 
 # Variáveis base para os aumentos de carga, usadas mesmo quando a seção de análise não aparece.
 consumo_arcond = 0
@@ -75,7 +246,7 @@ consumo_eletrodomesticos = 0
 consumo_climatizacao = 0
 consumo_outro = 0
   
-if consumo_atual > 0:
+if consumo_atual > 0 and st.session_state.get("gerar_dimensionamento"):
     st.markdown("---")
     st.subheader("📈 ANÁLISE DE CARGAS E PREVISÃO DE AUMENTOS")
     st.caption("Modifique ou adicione cargas somente se o cliente desejar incluir novos equipamentos, cada equipamento adicionado aumentará o consumo estimado e, consequentemente, a potência necessária do sistema fotovoltaico.")
@@ -177,7 +348,7 @@ total_aumentos_cargas = consumo_arcond + consumo_iluminacao + consumo_climatizac
 # Consumo alvo final
 consumo_alvo = consumo_atual + total_aumentos_cargas
 
-if consumo_alvo > 0:
+if consumo_alvo > 0 and st.session_state.get("gerar_dimensionamento"):
     # Engenharia base
     potencia_gerador = consumo_alvo / (30 * hsp * pr)
     potencia_painel_kw = potencia_painel / 1000
@@ -205,36 +376,59 @@ if consumo_alvo > 0:
     # ==========================================
     st.markdown("### 📝 Resumo Executivo para a Proposta")
     st.caption("Copie e cole este texto no contrato ou apresentação em PDF do cliente.")
+
+    dados_hsp = st.session_state.get("dados_hsp") or {}
+    coordenadas_salvas = st.session_state.get("coordenadas")
+    hsp_medio_anual = dados_hsp.get("hsp_medio_anual", "Não informado")
+    hsp_medio_mensal = dados_hsp.get("hsp_medio_mensal", {}) or {}
+    aumentos_cargas_txt = f"{total_aumentos_cargas:.2f}" if total_aumentos_cargas > 0 else "0.00"
+
     
-    texto_proposta = f"""
-    **Proposta Técnica - Sistema Fotovoltaico**
-    * **Cliente:** {nome_cliente if nome_cliente else 'Não informado'}
-    * **Local de Instalação:**
+    texto_proposta = textwrap.dedent(f"""
+        **Proposta Técnica - Sistema Fotovoltaico**
+
+        **Cliente**: {nome_cliente if nome_cliente else 'Não informado'}
+
+        **Local de Instalação**
         - **Endereço:** {endereço_cliente if endereço_cliente else 'Não informado'}
         - **Código UC:** {codigo_UC if codigo_UC else 'Não informado'}
         - **Padrão de Entrada:** {tipo_ligacao}
         - **Tensão de Fornecimento:** {tensao_fornecimento}
-        - **Taxa de Custo de Disponibilidade:** {custo_disponibilidade[tipo_ligacao]} KWh/mês (conforme tabela Energisa MS), gerando um custo fixo mensal de aproxidamente {custo_disponibilidade[tipo_ligacao] * 0.88:.2f} (considerando tarifa média de R$ 0,88 por kWh).
+        - **Custo de Disponibilidade:** R$ {custo_disponibilidade[tipo_ligacao] * 0.88:.2f}/mês
 
-    
-    **Memorial descritivo de cálculo:**
-        - **Irradiação Local (HSP):** {hsp} (horas de sol pleno por dia, fator para Campo Grande/MS)
-        - **Performance Ratio (PR):** {pr} (considerando perdas do sistema)   
-        - **Média deConsumo Atual:** {consumo_atual} kWh/mês
-        - **Aumentos de Carga Previstos:** {total_aumentos_cargas  if total_aumentos_cargas > 0 else '0'} kWh/mês (Detalhado na tabela de cargas)
-        - **Base de Cálculo:** 
-            1. Consumo Alvo (kWh/mês) = Consumo Médio Atual + Aumentos de Carga Previstos -> {consumo_atual} + {total_aumentos_cargas:.1f} = {consumo_alvo:.2f} kWh/mês
-            2. Pkwp = Consumo Alvo(KWh) / (30 dias * HSP * PR) -> Pkwp = {consumo_alvo:.2f} / (30 * {hsp} * {pr}) = {potencia_gerador:.2f} kWp
-            3. Quantidade de Módulos = Potência do Gerador / Potência do Módulo -> {potencia_gerador:.2f} / {potencia_painel_kw:.2f} = {qtd_paineis} módulos
+        **Dados de HSP obtidos automaticamente**
+        - **Latitude:** {coordenadas_salvas[0] if coordenadas_salvas else 'Não informado'}
+        - **Longitude:** {coordenadas_salvas[1] if coordenadas_salvas else 'Não informado'}
+        - **HSP Médio Anual:** {hsp_medio_anual}
+        - **TABELA DE HSP MÉDIO MENSAL OBTIDOS PELAS COORDENADAS**
+            * - Med. Geral: {hsp_medio_anual} h/dia
+            * - Jan: {hsp_medio_mensal.get(1, "Não informado")} h/dia
+            * - Fev: {hsp_medio_mensal.get(2, "Não informado")} h/dia
+            * - Mar: {hsp_medio_mensal.get(3, "Não informado")} h/dia
+            * - Abr: {hsp_medio_mensal.get(4, "Não informado")} h/dia
+            * - Mai: {hsp_medio_mensal.get(5, "Não informado")} h/dia
+            * - Jun: {hsp_medio_mensal.get(6, "Não informado")} h/dia
+            * - Jul: {hsp_medio_mensal.get(7, "Não informado")} h/dia
+            * - Ago: {hsp_medio_mensal.get(8, "Não informado")} h/dia
+            * - Set: {hsp_medio_mensal.get(9, "Não informado")} h/dia
+            * - Out: {hsp_medio_mensal.get(10, "Não informado")} h/dia
+            * - Nov: {hsp_medio_mensal.get(11, "Não informado")} h/dia
+            * - Dez: {hsp_medio_mensal.get(12, "Não informado")} h/dia
 
-    **Composição do Gerador:**
-       - **Potência Total Instalada:** {potencia_real:.2f} kWp
-       - **Módulos Fotovoltaicos:** {qtd_paineis} painéis de {potencia_painel}W
-       - **Tecnologia de Conversão:** {tipo_inversor}
-       - **Geração Média Mensal Estimada:** {geracao_estimada:.0f} kWh
-    """
-    
+        **Memorial descritivo de cálculo**
+        - **Irradiação Local (HSP):** {hsp} h/dia
+        - **Performance Ratio (PR):** {pr}
+        - **Média de Consumo Atual:** {consumo_atual:.2f} kWh/mês
+        - **Aumentos de Carga Previstos:** {aumentos_cargas_txt} kWh/mês
+        - **Consumo Alvo:** {consumo_alvo:.2f} kWh/mês
+        - **Potência Necessária:** {potencia_gerador:.2f} kWp
+        - **Potência Real Instalada:** {potencia_real:.2f} kWp
+        - **Quantidade de Módulos:** {qtd_paineis} módulos
+
+        **Composição do Gerador**
+        - **Módulos Fotovoltaicos:** {qtd_paineis} painéis de {potencia_painel}W
+        - **Tecnologia de Conversão:** {tipo_inversor}
+        - **Geração Média Mensal Estimada:** {geracao_estimada:.0f} kWh
+    """).strip()
+
     st.code(texto_proposta, language="markdown")
-
-else:
-    st.warning("Insira a média de consumo do cliente para gerar o dimensionamento.")
