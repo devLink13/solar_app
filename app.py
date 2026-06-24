@@ -4,6 +4,7 @@ import pandas as pd
 import textwrap
 from geopy.geocoders import Nominatim
 import requests
+from datetime import datetime
 
 # =========================================
 # FUNÇÕES DO APP
@@ -13,14 +14,17 @@ import requests
 def obter_coordenadas(endereco):
     if not endereco:
         return None, None
-    
-    geolocator = Nominatim(user_agent="solar_app")
-    location = geolocator.geocode(endereco, timeout=10)
-
-    if location:
-        return location.latitude, location.longitude
-    
-    return None, None
+    try:
+        geolocator = Nominatim(user_agent="solar_app")
+        location = geolocator.geocode(endereco, timeout=10)
+        if location:
+            return location.latitude, location.longitude
+        else:
+            st.error(f"Endereço não encontrado, tente novamente ou preencha HSP manualmente")
+            return None, None
+    except Exception:
+        st.error(f"Erro ao obter coordenadas da API, tente novamente ou preencha HSP manualmente")
+        return None, None
 
 # OBTER HSP (Horas de Sol Pleno) A PARTIR DAS COORDENADAS GEOGRÁFICAS
 def obter_hsp(lat, lon):
@@ -59,16 +63,6 @@ def obter_hsp(lat, lon):
     }
 
 
-def gerar_assinatura_inputs(*valores):
-    partes = []
-    for valor in valores:
-        if hasattr(valor, "to_json"):
-            partes.append(valor.to_json())
-        else:
-            partes.append(str(valor))
-    return "||".join(partes)
-
-    
 # ==========================================
 # CONFIGURAÇÃO DA PÁGINA
 # ==========================================
@@ -87,7 +81,6 @@ st.session_state.setdefault("coordenadas", None)
 st.session_state.setdefault("endereco_busca", None)
 st.session_state.setdefault("cache_endereco_geo", {})
 st.session_state.setdefault("gerar_dimensionamento", False)
-st.session_state.setdefault("ultima_assinatura_inputs", None)
 
 hsp_auto = st.session_state.get("dados_hsp")
 hsp_padrao = 5.2
@@ -124,16 +117,59 @@ if hsp_auto and hsp_auto.get("hsp_medio_anual") is not None:
 else:
     st.sidebar.caption("Valor padrão para Campo Grande/MS. Insira o endereço do cliente para obter o valor exato.")
 pr = st.sidebar.number_input("Performance Ratio (PR)", min_value=0.50, max_value=1.00, value=0.8, step=0.01)
+st.sidebar.caption("O PR é um fator que representa as perdas do sistema fotovoltaico, incluindo perdas de conversão, sombreamento, temperatura e outros fatores. Um valor típico é 0.8 (80%).")
 
+# ==========================================
+# BARRA LATERAL (ESPECIFICAÇÕES DO KIT)
+# ==========================================
 st.sidebar.markdown("---")
-st.sidebar.subheader("Especificações do Kit")
+st.sidebar.subheader("☀️Especificações do Kit")
 potencia_painel = st.sidebar.number_input("Potência do Módulo (W)", min_value=300, max_value=800, value=550, step=10)
-tipo_inversor = st.sidebar.selectbox("Tecnologia", ["Inversor String", "Microinversor"])
+tipo_inversor = st.sidebar.selectbox("Tecnologia do Inversor", ["Inversor String", "Microinversor"])
+marca_inversor = st.sidebar.text_input("Marca do Inversor", placeholder="Ex: Fronius, Huawei, ABB, etc.")
+marca_modulo = st.sidebar.text_input("Marca do Módulo Fotovoltaico", placeholder="Ex: Canadian, Jinko, Trina, etc.")
+largura_modulo = st.sidebar.number_input("Largura do Módulo (m)", min_value=0.5, max_value=2.5, value=1.15, step=0.01)
+altura_modulo = st.sidebar.number_input("Altura do Módulo (m)", min_value=0.5, max_value=2.5, value=1.65, step=0.01)
+area_modulo = largura_modulo * altura_modulo
+
+# ==========================================
+# INFORMAÇÕES DA CASA DO CLIENTE (TELHADO E ESTRUTURAS)
+# ==========================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("🏠 Informações de Telhado")
+st.sidebar.caption("Essas informações são importantes para o planejamento da instalação do sistema fotovoltaico.")
+largura_telhado = st.sidebar.number_input("Largura do Telhado (m)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
+comprimento_telhado = st.sidebar.number_input("Comprimento do Telhado (m)", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
+try:
+    area_telhado = largura_telhado * comprimento_telhado
+except:
+    area_telhado = 0.0
+st.sidebar.caption(f"Área disponível para instalação: {area_telhado:.2f} m²")
+
+# ==========================================
+# BARRA LATERAL (CUSTOS E INSTALAÇÃO)
+# ==========================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("💵 Precificação")
+valor_kit = st.sidebar.number_input("Valor do Kit (R$)", min_value=1000, max_value=50000, value=7500, step=500)
+percentual_lucro = st.sidebar.slider("Percentual de Lucro no kit (%)", min_value=0, max_value=100, value=10, step=1)
+st.sidebar.caption(f"valor do kit com lucro: R$ {valor_kit * (1 + percentual_lucro / 100):.2f}")
+valor_projeto = st.sidebar.number_input("Valor do Projeto (R$)", min_value=250, max_value=10000, value=800, step=50)
+valor_art = st.sidebar.number_input("Valor da emissão de ART (R$)", min_value=50, max_value=2000, value=80, step=10)
+valor_assinatura = st.sidebar.number_input("Valor da Assinatura do Projeto (R$)", min_value=50, max_value=2000, value=100, step=10)
+valor_outros = st.sidebar.number_input("Outros Custos (R$)", min_value=0, max_value=5000, value=0, step=50)
+st.sidebar.caption("Outros custos podem incluir deslocamento, materiais imprevisíveis, etc.")
+valor_instalacao = st.sidebar.number_input("Mão de Obra por Kwp (R$)", min_value = 100, max_value = 1000, value = 250, step = 10)
+qtd_instaladores = st.sidebar.slider("Quantidade de Instaladores", min_value=1, max_value=10, value=2, step=1)
+
+
+
+
 
 # ==========================================
 # ÁREA PRINCIPAL (DADOS DO CLIENTE E CONSUMO)
 # ==========================================
-st.subheader("👤 CADASTRO DO CLIENTE")
+st.subheader("👤 DADOS DO CLIENTE")
 
 col1, col2 = st.columns(2)
 
@@ -211,33 +247,8 @@ with col2:
     consumo_alvo = consumo_atual  # Inicialmente, o consumo alvo é igual ao consumo atual 
     tipo_telhado = st.selectbox("Tipo de Telhado", ["Fibrocimento", "Cerâmico", "Metálico/Zinco", "Laje"])
     tensao_fornecimento = st.selectbox("Tensão de Fornecimento (V)", ["127V", "220V"])
+    disjuntor_padrao = st.text_input("Disjuntor Padrão (A)", placeholder="Ex: 40, 60, 100, etc.")
 
-assinatura_atual = gerar_assinatura_inputs(
-    nome_cliente,
-    endereço_cliente,
-    codigo_UC,
-    tipo_ligacao,
-    consumo_atual,
-    tipo_telhado,
-    tensao_fornecimento,
-    hsp,
-    pr,
-    potencia_painel,
-    tipo_inversor,
-    st.session_state.get("cargas_editor"),
-)
-
-if st.session_state.get("gerar_dimensionamento") and st.session_state.get("ultima_assinatura_inputs") != assinatura_atual:
-    st.session_state["gerar_dimensionamento"] = False
-
-# botão para gerar o dimensionamento e renderizar o restante da página
-if st.button("Gerar Dimensionamento", type="secondary", use_container_width=True):
-    if consumo_atual <= 0:
-        st.warning("Informe um valor de consumo atual maior que zero para gerar o dimensionamento.")
-        st.session_state["gerar_dimensionamento"] = False
-    else:
-        st.session_state["gerar_dimensionamento"] = True
-        st.session_state["ultima_assinatura_inputs"] = assinatura_atual
 
 # Variáveis base para os aumentos de carga, usadas mesmo quando a seção de análise não aparece.
 consumo_arcond = 0
@@ -246,15 +257,14 @@ consumo_eletrodomesticos = 0
 consumo_climatizacao = 0
 consumo_outro = 0
   
-if consumo_atual > 0 and st.session_state.get("gerar_dimensionamento"):
+if consumo_atual > 0:
     st.markdown("---")
     st.subheader("📈 ANÁLISE DE CARGAS E PREVISÃO DE AUMENTOS")
     st.caption("Modifique ou adicione cargas somente se o cliente desejar incluir novos equipamentos, cada equipamento adicionado aumentará o consumo estimado e, consequentemente, a potência necessária do sistema fotovoltaico.")
 
-# ==========================================
-# ANÁLISE DE CARGAS E PREVISÃO DE AUMENTOS
-# ==========================================
-
+    # ==========================================
+    # ANÁLISE DE CARGAS E PREVISÃO DE AUMENTOS
+    # ==========================================
     with st.expander("💡 Previsão de Aumento de Carga", expanded=False):
         df_cargas = pd.DataFrame({
             # Potências médias típicas (W) baseadas em faixas usuais de INMETRO/PROCEL e fabricantes.
@@ -338,17 +348,17 @@ if consumo_atual > 0 and st.session_state.get("gerar_dimensionamento"):
             st.metric("Total de Aumento Previsto", f"{total_aumentos_preview:.1f} kWh/mês")
 
 
-# ==========================================
-# MOTOR DE CÁLCULO
-# ==========================================
+    # ==========================================
+    # MOTOR DE CÁLCULO
+    # ==========================================
 
-# Soma total de aumentos
-total_aumentos_cargas = consumo_arcond + consumo_iluminacao + consumo_climatizacao + consumo_eletrodomesticos + consumo_outro
+    # Soma total de aumentos
+    total_aumentos_cargas = consumo_arcond + consumo_iluminacao + consumo_climatizacao + consumo_eletrodomesticos + consumo_outro
 
-# Consumo alvo final
-consumo_alvo = consumo_atual + total_aumentos_cargas
+    # Consumo alvo final
+    consumo_alvo = consumo_atual + total_aumentos_cargas
 
-if consumo_alvo > 0 and st.session_state.get("gerar_dimensionamento"):
+
     # Engenharia base
     potencia_gerador = consumo_alvo / (30 * hsp * pr)
     potencia_painel_kw = potencia_painel / 1000
@@ -385,50 +395,77 @@ if consumo_alvo > 0 and st.session_state.get("gerar_dimensionamento"):
 
     
     texto_proposta = textwrap.dedent(f"""
-        **Proposta Técnica - Sistema Fotovoltaico**
+        # DIMENSIONAMENTO FOTOVOLTAICO GERADO AUTOMATICAMENTE EM {datetime.now().strftime("%d/%m/%Y")}
 
-        **Cliente**: {nome_cliente if nome_cliente else 'Não informado'}
+        CLIENTE: {nome_cliente if nome_cliente else 'Não informado'}
 
-        **Local de Instalação**
-        - **Endereço:** {endereço_cliente if endereço_cliente else 'Não informado'}
-        - **Código UC:** {codigo_UC if codigo_UC else 'Não informado'}
-        - **Padrão de Entrada:** {tipo_ligacao}
-        - **Tensão de Fornecimento:** {tensao_fornecimento}
-        - **Custo de Disponibilidade:** R$ {custo_disponibilidade[tipo_ligacao] * 0.88:.2f}/mês
+        1. LOCAL DE INSTALAÇÃO
+            1.1 Endereço: {endereço_cliente if endereço_cliente else 'Não informado'}
+            1.2 Código UC: {codigo_UC if codigo_UC else 'Não informado'}
+            1.3 Padrão de Entrada: {tipo_ligacao}
+            1.4 Tensão de Fornecimento: {tensao_fornecimento}
+            1.5 Disjuntor Padrão: {disjuntor_padrao if disjuntor_padrao else 'Não informado'}
+            1.6 Custo de Disponibilidade: R$ {custo_disponibilidade[tipo_ligacao] * 0.88:.2f}/mês
 
-        **Dados de HSP obtidos automaticamente**
-        - **Latitude:** {coordenadas_salvas[0] if coordenadas_salvas else 'Não informado'}
-        - **Longitude:** {coordenadas_salvas[1] if coordenadas_salvas else 'Não informado'}
-        - **HSP Médio Anual:** {hsp_medio_anual}
-        - **TABELA DE HSP MÉDIO MENSAL OBTIDOS PELAS COORDENADAS**
-            * - Med. Geral: {hsp_medio_anual} h/dia
-            * - Jan: {hsp_medio_mensal.get(1, "Não informado")} h/dia
-            * - Fev: {hsp_medio_mensal.get(2, "Não informado")} h/dia
-            * - Mar: {hsp_medio_mensal.get(3, "Não informado")} h/dia
-            * - Abr: {hsp_medio_mensal.get(4, "Não informado")} h/dia
-            * - Mai: {hsp_medio_mensal.get(5, "Não informado")} h/dia
-            * - Jun: {hsp_medio_mensal.get(6, "Não informado")} h/dia
-            * - Jul: {hsp_medio_mensal.get(7, "Não informado")} h/dia
-            * - Ago: {hsp_medio_mensal.get(8, "Não informado")} h/dia
-            * - Set: {hsp_medio_mensal.get(9, "Não informado")} h/dia
-            * - Out: {hsp_medio_mensal.get(10, "Não informado")} h/dia
-            * - Nov: {hsp_medio_mensal.get(11, "Não informado")} h/dia
-            * - Dez: {hsp_medio_mensal.get(12, "Não informado")} h/dia
+        
 
-        **Memorial descritivo de cálculo**
-        - **Irradiação Local (HSP):** {hsp} h/dia
-        - **Performance Ratio (PR):** {pr}
-        - **Média de Consumo Atual:** {consumo_atual:.2f} kWh/mês
-        - **Aumentos de Carga Previstos:** {aumentos_cargas_txt} kWh/mês
-        - **Consumo Alvo:** {consumo_alvo:.2f} kWh/mês
-        - **Potência Necessária:** {potencia_gerador:.2f} kWp
-        - **Potência Real Instalada:** {potencia_real:.2f} kWp
-        - **Quantidade de Módulos:** {qtd_paineis} módulos
+        2. DADOS DE HSP OBTIDOS AUTOMATICAMENTE
+            2.1 Latitude: {coordenadas_salvas[0] if coordenadas_salvas else 'Não informado'}
+            2.2 Longitude: {coordenadas_salvas[1] if coordenadas_salvas else 'Não informado'}
+            2.3 HSP Médio Anual: {hsp_medio_anual:2f} h/dia
+            2.4 TABELA DE HSP MÉDIO MENSAL OBTIDOS PELAS COORDENADAS
+                * - Med. Geral: {hsp_medio_anual:2f}
+                * - Jan: {hsp_medio_mensal.get(1, "Não informado"):2f}
+                * - Fev: {hsp_medio_mensal.get(2, "Não informado"):2f}
+                * - Mar: {hsp_medio_mensal.get(3, "Não informado"):2f}
+                * - Abr: {hsp_medio_mensal.get(4, "Não informado"):2f}
+                * - Mai: {hsp_medio_mensal.get(5, "Não informado"):2f}
+                * - Jun: {hsp_medio_mensal.get(6, "Não informado"):2f}
+                * - Jul: {hsp_medio_mensal.get(7, "Não informado"):2f}
+                * - Ago: {hsp_medio_mensal.get(8, "Não informado"):2f}
+                * - Set: {hsp_medio_mensal.get(9, "Não informado"):2f}
+                * - Out: {hsp_medio_mensal.get(10, "Não informado"):2f}
+                * - Nov: {hsp_medio_mensal.get(11, "Não informado"):2f}
+                * - Dez: {hsp_medio_mensal.get(12, "Não informado"):2f}
 
-        **Composição do Gerador**
-        - **Módulos Fotovoltaicos:** {qtd_paineis} painéis de {potencia_painel}W
-        - **Tecnologia de Conversão:** {tipo_inversor}
-        - **Geração Média Mensal Estimada:** {geracao_estimada:.0f} kWh
+        3. MEMORIAL DESCRIPTIVO DE CÁLCULO  
+            3.1 Irradiação Local (HSP): {hsp} h/dia
+            3.2 Performance Ratio (PR): {pr}
+            3.3 Média de Consumo Atual: {consumo_atual:.2f} kWh/mês
+            3.4 Aumentos de Carga Previstos: {aumentos_cargas_txt} kWh/mês detalhados na tabela de cargas.
+            3.5 Consumo Alvo: Consumo Médio Anual + Aumentos de Cargas Previstos -> {consumo_alvo:.2f} kWh/mês
+            3.6 Potência Necessária kWp: Consumo Alvo (kWh/mês) / (30 dias * HSP * PR) -> {potencia_gerador:.2f} kWp
+            3.7 Potência Real Instalada: {potencia_real:.2f} kWp
+
+        4. COMPOSIÇÃO DO GERADOR
+            4.1 Módulos Fotovoltaicos: {qtd_paineis} painéis de {potencia_painel}W
+                |-> Área de cada módulo: {largura_modulo:.2f} m x {altura_modulo:.2f} m = {area_modulo:.2f} m²
+                    |-> largura módulo: {largura_modulo:.2f} m
+                    |-> altura módulo: {altura_modulo:.2f} m
+                |-> Área total ocupada pelos módulos: {qtd_paineis * area_modulo:.2f} m²
+                |-> Área disponível no telhado: {area_telhado if area_telhado else 'Não informado'} m²
+                    |-> Telhado atende à instalação? {"Não Informado detalhes do telhado" if area_telhado == 0 else ("SIM" if qtd_paineis * area_modulo <= area_telhado else "NÃO")}
+            4.2 Tecnologia de Conversão: {tipo_inversor}
+            4.3 Marca do Inversor: {marca_inversor if marca_inversor else 'Não informado'}
+            4.4 Marca do Módulo Fotovoltaico: {marca_modulo if marca_modulo else 'Não informado'}
+            4.5 Dimensionamento do Inversor:
+                | -> Potência mínima do inversor: {potencia_real - potencia_real*0.2:.2f} kWp
+                | -> Potência máxima do inversor: {potencia_real*1.2:.2f} kWp
+            4.6 Geração Média Mensal Estimada: {geracao_estimada:.0f} kWh
+
+
+        5. CUSTOS E INVESTIMENTO
+            5.1 Valor do Kit: R$ {valor_kit:.2f} (com {percentual_lucro}% de lucro incluso: R$ {valor_kit * (1 + percentual_lucro / 100):.2f})
+            5.2 Valor do Projeto: R$ {valor_projeto:.2f}
+            5.3 Valor da Emissão de ART: R$ {valor_art:.2f}
+            5.4 Valor da Assinatura do Projeto: R$ {valor_assinatura:.2f}
+            5.5 Outros Custos: R$ {valor_outros:.2f}
+            5.6 Mão de Obra por Kwp: R$ {valor_instalacao:.2f} x {potencia_real:.2f} kWp = R$ {valor_instalacao * potencia_real:.2f}
+            5.7 Custo Total Estimado do Sistema: R$ {valor_kit * (1 + percentual_lucro / 100) + valor_projeto + valor_art + valor_assinatura + valor_outros + (valor_instalacao * potencia_real):.2f}
+
     """).strip()
 
-    st.code(texto_proposta, language="markdown")
+    st.code(texto_proposta,language="markdown")
+
+else:
+    st.info("Informe o consumo atual do cliente para habilitar a análise de cargas e o dimensionamento do sistema fotovoltaico.")
